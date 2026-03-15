@@ -1,19 +1,17 @@
 pluginManagement {
-  repositories {
-    // Essential: This is where the Android Gradle Plugin (com.android.application) is hosted.
-    google() 
-      // Essential: Standard repository for other dependencies and plugins.
-      mavenCentral() 
-      // For Jetpack/AndroidX libraries
-      gradlePluginPortal()
-  }
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
 }
 dependencyResolutionManagement {
-  repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-      google()
+        google()
         mavenCentral()
     }
 }
-rootProject.name = "KotlinApkTemplate"
+
+rootProject.name = "WebToAPK"
 include ':app'
