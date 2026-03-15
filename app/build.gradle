@@ -3,14 +3,14 @@ plugins {
   id 'org.jetbrains.kotlin.android'
 }
 android {
-  namespace 'com.example.helloworld'
+  namespace 'com.webtoapk.youns.app'
   compileSdk 34
   defaultConfig {
-    applicationId "com.example.helloworld"
+    applicationId "com.webtoapk.youns.app"
     minSdk 24
     targetSdk 34
-    versionCode 1
-    versionName "1.0"
+    versionCode 2
+    versionName "1.1"
     testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
   }
   buildTypes {
@@ -28,11 +28,6 @@ android {
   }
   kotlinOptions {
     jvmTarget = '17'
-  }
-  sourceSets {
-    main {
-      assets.srcDirs = ['src/main/assets']
-    }
   }
 }
 dependencies {
