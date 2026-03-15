@@ -1,79 +1,143 @@
-name: Build Android APK from Web ZIP
+name: Build APK from ZIP
 
 on:
   workflow_dispatch:
     inputs:
       zip_url:
-        description: 'URL of the project ZIP file'
+        description: 'URL of the ZIP file containing web project'
         required: true
       app_name:
-        description: 'Name of the Android App'
+        description: 'Name of the application'
         required: true
         default: 'WebToAPK'
       build_type:
-        description: 'Build type (debug or release)'
+        description: 'Type of build (debug or release)'
         required: true
         default: 'debug'
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    concurrency:
+      group: build-apk
+      cancel-in-progress: false
+    timeout-minutes: 20
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
           distribution: 'temurin'
+          java-version: '17'
           cache: 'gradle'
 
-      - name: Install Android SDK components
+      - name: Install Tools
         run: |
-          yes | sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+          sudo apt-get update -qq
+          sudo apt-get install -y unzip curl rsync
 
-      - name: Download Project ZIP
+      - name: Download & Validate ZIP
         run: |
-          curl -L "${{ github.event.inputs.zip_url }}" -o project.zip
-          unzip project.zip -d web_content
-          # البحث عن index.html في أي مكان داخل ZIP
-          if ! find web_content -name index.html | grep -q 'index.html'; then
-            echo "Error: index.html not found in ZIP!"
+          echo "Downloading ZIP from: ${{ github.event.inputs.zip_url }}"
+          curl -L --max-time 60 -o project.zip "${{ github.event.inputs.zip_url }}"
+          SIZE=$(stat -c%s project.zip)
+          echo "File size: $SIZE bytes"
+          if [ $SIZE -gt 209715200 ]; then
+            echo "Error: File too large (max 200MB)"
             exit 1
           fi
+          if [ $SIZE -lt 100 ]; then
+            echo "Error: File too small, download may have failed"
+            exit 1
+          fi
+          echo "ZIP downloaded successfully"
 
-      - name: Prepare Android Project Assets
+      - name: Extract & Validate Web Files
+        run: |
+          mkdir -p web_files
+          unzip -q project.zip -d web_files
+          echo "Extracted files:"
+          ls -la web_files/
+          
+          # Check for index.html in root or one level deep
+          if [ -f web_files/index.html ]; then
+            echo "✅ Found index.html in root"
+          else
+            # Check one level deep (common when zip has a subfolder)
+            SUBDIR=$(find web_files -maxdepth 1 -mindepth 1 -type d | head -1)
+            if [ -n "$SUBDIR" ] && [ -f "$SUBDIR/index.html" ]; then
+              echo "Found index.html in subfolder: $SUBDIR - moving to root"
+              cp -r "$SUBDIR/"* web_files/
+            else
+              echo "❌ Error: index.html not found in ZIP"
+              exit 1
+            fi
+          fi
+
+      - name: Copy Web Files to Android Assets
         run: |
           mkdir -p app/src/main/assets/www
-          cp -r web_content/* app/src/main/assets/www/
+          rm -rf app/src/main/assets/www/*
+          rsync -av web_files/ app/src/main/assets/www/
+          echo "✅ Web assets copied:"
+          ls -la app/src/main/assets/www/
 
-      - name: Grant execute permission for gradlew
+      - name: Update App Name
+        run: |
+          APP_NAME_SAFE=$(echo "${{ github.event.inputs.app_name }}" | sed 's/[<>&"'"'"']//g' | head -c 50)
+          if [ -f "app/src/main/res/values/strings.xml" ]; then
+            sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">${APP_NAME_SAFE}</string>|"               app/src/main/res/values/strings.xml
+            echo "✅ Updated app name to: $APP_NAME_SAFE"
+          fi
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Make Gradlew Executable
         run: chmod +x gradlew
 
-      - name: Set signing config for release (if any)
+      - name: Build Debug APK
+        if: ${{ github.event.inputs.build_type == 'debug' || github.event.inputs.build_type == 'webview' }}
+        run: |
+          ./gradlew assembleDebug --no-daemon --stacktrace
+          echo "✅ Build completed!"
+          find app/build/outputs/apk -name "*.apk" -exec ls -lh {} \;
+
+      - name: Build Release APK
         if: ${{ github.event.inputs.build_type == 'release' }}
         run: |
-          echo "Configuring signing from secrets"
-          mkdir -p ~/.android
-          echo ${{ secrets.RELEASE_KEYSTORE_BASE64 }} | base64 --decode > ~/release.keystore
+          ./gradlew assembleRelease --no-daemon --stacktrace
+          echo "✅ Build completed!"
+          find app/build/outputs/apk -name "*.apk" -exec ls -lh {} \;
 
-      - name: Build with Gradle
-        run: |
-          BUILD_NAME="${{ github.event.inputs.app_name }}-$(date +%Y%m%d%H%M%S).apk"
-          if [ "${{ github.event.inputs.build_type }}" == "release" ]; then
-            ./gradlew assembleRelease
-            APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
-          else
-            ./gradlew assembleDebug
-            APK_PATH=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
-          fi
-          echo "APK built at $APK_PATH"
-          echo "APK_NAME=$BUILD_NAME" >> $GITHUB_ENV
-          echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV
-
-      - name: Upload APK Artifact
+      - name: Upload Debug Artifact
+        if: ${{ github.event.inputs.build_type == 'debug' || github.event.inputs.build_type == 'webview' }}
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.APK_NAME }}
-          path: ${{ env.APK_PATH }}
+          name: ${{ github.event.inputs.app_name }}-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
+
+      - name: Upload Release Artifact
+        if: ${{ github.event.inputs.build_type == 'release' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.app_name }}-release-apk
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf project.zip web_files
+          echo "✅ Cleanup done."
